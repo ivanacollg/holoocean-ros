@@ -2,9 +2,10 @@ from abc import ABC, abstractmethod
 from sensor_msgs.msg import Imu, Image, MagneticField, LaserScan, PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped
-from holoocean_interfaces.msg import DVLSensorRange, AgentCommand
+from holoocean_interfaces.msg import DVLSensorRange, AgentCommand, OculusPing
 from scipy.spatial.transform import Rotation
 import numpy as np
+import cv2
 
 PERFECT_COV = 1e-9
 UNKNOWN_COV = -1
@@ -632,6 +633,75 @@ class IMUDynamicsEncoder(MultiSensorPublisher):
         msg.angular_velocity_covariance = imu_msg.angular_velocity_covariance
 
         return msg
+    
+class SonarEncoder(SensorPublisher):
+
+
+   def __init__(self, sensor_dicts):
+       super().__init__(sensor_dicts)
+       self.message_type = OculusPing # ImagingSonar
+
+
+       if "configuration" in sensor_dicts:
+           if "RangeMin" in sensor_dicts['configuration']:
+               self.RangeMin = sensor_dicts['configuration']['RangeMin']
+           else:
+               self.RangeMin = 0.1
+           if "RangeMax" in sensor_dicts['configuration']:
+               self.RangeMax = sensor_dicts['configuration']['RangeMax']
+           else:
+               self.RangeMax = 10
+           if "RangeBins" in sensor_dicts['configuration']:
+               self.RangeBins = sensor_dicts['configuration']['RangeBins']
+           else:
+               self.RangeBins = 512
+           if "AzimuthBins" in sensor_dicts['configuration']:
+               self.AziBins = sensor_dicts['configuration']['AzimuthBins']
+           else:
+               self.AziBins = 512
+           if "Azimuth" in sensor_dicts['configuration']:
+               self.azimuth = sensor_dicts['configuration']['Azimuth']
+           else:
+               self.azimuth = 120
+
+
+       else:
+           self.RangeMin = 0.1
+           self.RangeMax = 10
+           self.RangeBins = 512
+           self.AziBins = 512
+           self.azimuth = 120
+
+
+      
+   def encode(self, sensor_data):
+       msg = self.message_type()
+       msg.header.frame_id = self.socket
+
+
+       msg.num_ranges = self.RangeBins
+       msg.num_beams = self.AziBins
+
+
+       resolution = (self.RangeMax - self.RangeMin) / self.RangeBins
+       msg.range_resolution = resolution
+
+
+       # TODO: Verify bearing calculations are correct
+       bearings_rad = np.linspace(-self.azimuth/2, self.azimuth/2, self.AziBins)
+       msg.bearings = (bearings_rad * 18000 / np.pi).astype(np.int16)
+
+
+       img = np.array(sensor_data)
+       img = img[::-1, ::-1]
+       img = np.array(img*255).astype(np.uint8)
+       params = [int(cv2.IMWRITE_PNG_COMPRESSION), 1]
+       status, compressed = cv2.imencode(".png", img, params)
+       msg.ping.data = compressed.tobytes()
+
+
+       return msg
+
 
 
 encoders = {
@@ -656,4 +726,5 @@ encoders = {
     'PoseSensor': PoseSensorEncoder,
     'IMUDynamics': IMUDynamicsEncoder,
     # Add other sensor type encoders here...
+    'ImagingSonar': SonarEncoder,
 }
