@@ -11,4 +11,4 @@ float64    range_resolution # length of a single range bin
 uint32     num_ranges       # number of range lines in the image
 uint32     num_beams        # number of bearings in the image     
 
-sensor_msgs/CompressedImage ping
+sensor_msgs/Image ping

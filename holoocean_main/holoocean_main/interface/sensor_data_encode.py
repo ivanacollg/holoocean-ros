@@ -678,27 +678,19 @@ class SonarEncoder(SensorPublisher):
        msg = self.message_type()
        msg.header.frame_id = self.socket
 
-
        msg.num_ranges = self.RangeBins
        msg.num_beams = self.AziBins
-
 
        resolution = (self.RangeMax - self.RangeMin) / self.RangeBins
        msg.range_resolution = resolution
 
-
-       # TODO: Verify bearing calculations are correct
-       bearings_rad = np.linspace(-self.azimuth/2, self.azimuth/2, self.AziBins)
-       msg.bearings = (bearings_rad * 18000 / np.pi).astype(np.int16)
-
+       bearings_deg = np.linspace(-self.azimuth/2, self.azimuth/2, self.AziBins)
+       msg.bearings = (bearings_deg * 100).astype(np.int16)
 
        img = np.array(sensor_data)
-       img = img[::-1, ::-1]
+       img = img[::1, ::-1]
        img = np.array(img*255).astype(np.uint8)
-       params = [int(cv2.IMWRITE_PNG_COMPRESSION), 1]
-       status, compressed = cv2.imencode(".png", img, params)
-       msg.ping.data = compressed.tobytes()
-
+       msg.ping.data = img.tobytes()
 
        return msg
 
@@ -727,4 +719,6 @@ encoders = {
     'IMUDynamics': IMUDynamicsEncoder,
     # Add other sensor type encoders here...
     'ImagingSonar': SonarEncoder,
+    'GPUImagingSonar': SonarEncoder,
+    'RaycastImagingSonar': SonarEncoder,
 }
