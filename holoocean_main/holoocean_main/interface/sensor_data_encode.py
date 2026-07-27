@@ -13,8 +13,9 @@ UNKNOWN_COV = -1
 # TODO make a note about how the Dynamics Sensor IMU is not in local frame. Also no gravity vector
 multi_publisher_sensors = {
     'DVLSensor': ['Velocity', 'Range'],
-    'DynamicsSensor': ['Odom', 'IMU', 'GT'],
-    'IMUSensor': ['', 'Bias']
+    'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
+    'IMUSensor': ['', 'Bias'],
+    'RaycastImagingSonar': ['', 'Image']
     # TODO add Camera sensor and info topic
 }
 
@@ -380,8 +381,9 @@ class DynamicsEncoder(SensorPublisher):
         msg.header.frame_id = self.map_frame
         msg.child_frame_id = self.socket + "_world"
         if len(sensor_data) == 18:
-            sensor_data.append(-100) # Should error out if mistakenly trying to use it as a quaternion
-            # TODO should try and think of a better solution. 
+            sensor_data = np.append(sensor_data, -100) # Should error out if mistakenly trying to use it as a quaternion
+            # TODO should try and think of a better solution.
+            #print(len(sensor_data))
         elif len(sensor_data) != 19:
             raise TypeError("Dynamics data is not the expected shape for ROS publishing")
 
@@ -459,6 +461,7 @@ class DynamicsIMUEncoder(SensorPublisher):
         self.cov = _build_covariance(3, cov=None, sigma=None)  
 
     def encode(self, sensor_data):
+        print(len(sensor_data))
         msg = self.message_type()
         # TODO would need to check if UseCOM flag is set.
         msg.header.frame_id = self.socket + "_world"
@@ -636,7 +639,6 @@ class IMUDynamicsEncoder(MultiSensorPublisher):
     
 class SonarEncoder(SensorPublisher):
 
-
    def __init__(self, sensor_dicts):
        super().__init__(sensor_dicts)
        self.message_type = OculusPing # ImagingSonar
@@ -687,10 +689,55 @@ class SonarEncoder(SensorPublisher):
        bearings_deg = np.linspace(-self.azimuth/2, self.azimuth/2, self.AziBins)
        msg.bearings = (bearings_deg * 100).astype(np.int16)
 
+    #    img = np.array(sensor_data)
+    #    img = img[::1, ::-1]
+    #    img = np.array(img*255).astype(np.uint8)
+
+    #    img = np.ascontiguousarray(img)
+    #    msg.ping.data = img.tobytes()
+
+       return msg
+
+
+class SonarImageEncoder(SensorPublisher):
+
+   def __init__(self, sensor_dicts):
+       super().__init__(sensor_dicts)
+       self.message_type = Image # ImagingSonar
+
+       if "configuration" in sensor_dicts:
+            if "RangeBins" in sensor_dicts['configuration']:
+                self.RangeBins = sensor_dicts['configuration']['RangeBins']
+            else:
+                self.RangeBins = 512
+            if "AzimuthBins" in sensor_dicts['configuration']:
+                self.AziBins = sensor_dicts['configuration']['AzimuthBins']
+            else:
+                self.AziBins = 512
+       
+       else:
+            self.RangeBins = 512
+            self.AziBins = 512
+      
+   def encode(self, sensor_data):
+       msg = self.message_type()
+       msg.header.frame_id = self.socket
+
+       msg.height = sensor_data.shape[0]  # Rows
+       msg.width = sensor_data.shape[1]   # Columns
+       msg.step = msg.width * 1
+       msg.encoding = "mono8"
+       msg.is_bigendian = 0
+
        img = np.array(sensor_data)
        img = img[::1, ::-1]
        img = np.array(img*255).astype(np.uint8)
-       msg.ping.data = img.tobytes()
+
+    #   img = np.ascontiguousarray(img)
+
+       msg.data = img.tobytes()
+
+     #  print("PUBLISHING IMAGE")
 
        return msg
 
@@ -706,7 +753,7 @@ encoders = {
     'RotationSensor': RotationEncoder,
     'VelocitySensor': VelocityEncoder,
     'DynamicsSensorOdom': DynamicsEncoder,
-    'DynamicsSensorIMU': DynamicsIMUEncoder,
+ #   'DynamicsSensorIMU': DynamicsIMUEncoder,
     'DynamicsSensorGT': DynamicsGTEncoder,
     'GPSSensor': GPSEncoder,
     'ControlCommand': CommandEncoder,
@@ -716,9 +763,10 @@ encoders = {
     'CameraSensor': ImageEncoder,
     'RangeFinderSensor': LaserScanEncoder,
     'PoseSensor': PoseSensorEncoder,
-    'IMUDynamics': IMUDynamicsEncoder,
+  #  'IMUDynamics': IMUDynamicsEncoder,
     # Add other sensor type encoders here...
-    'ImagingSonar': SonarEncoder,
-    'GPUImagingSonar': SonarEncoder,
+    # 'ImagingSonar': SonarEncoder,
+    # 'GPUImagingSonar': SonarEncoder,
     'RaycastImagingSonar': SonarEncoder,
+    'RaycastImagingSonarImage': SonarImageEncoder,
 }
