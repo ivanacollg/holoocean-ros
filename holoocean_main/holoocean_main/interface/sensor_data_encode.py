@@ -730,7 +730,7 @@ class SonarImageEncoder(SensorPublisher):
        msg.is_bigendian = 0
 
        img = np.array(sensor_data)
-       img = img[::1, ::-1]
+       img = img[::-1, ::-1]
        img = np.array(img*255).astype(np.uint8)
 
     #   img = np.ascontiguousarray(img)
