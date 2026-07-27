@@ -2,7 +2,8 @@ from abc import ABC, abstractmethod
 from sensor_msgs.msg import Imu, Image, MagneticField, LaserScan, PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped
-from holoocean_interfaces.msg import DVLSensorRange, AgentCommand, OculusPing
+from holoocean_interfaces.msg import DVLSensorRange, AgentCommand # OculusPing
+from sonar_oculus_msgs.msg import OculusPing
 from scipy.spatial.transform import Rotation
 import numpy as np
 import cv2
@@ -730,7 +731,7 @@ class SonarImageEncoder(SensorPublisher):
        msg.is_bigendian = 0
 
        img = np.array(sensor_data)
-       img = img[::-1, ::-1]
+       img = img[::1, ::-1]
        img = np.array(img*255).astype(np.uint8)
 
     #   img = np.ascontiguousarray(img)

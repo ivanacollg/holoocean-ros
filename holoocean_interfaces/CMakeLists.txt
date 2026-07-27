@@ -13,7 +13,6 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(sensor_msgs REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -38,10 +37,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DesiredCommand.msg"
   "msg/AgentCommand.msg"
   "msg/SensorCommand.msg"
-  "msg/OculusFire.msg"
-  "msg/OculusPing.msg"
   "srv/SetControlMode.srv"
-  DEPENDENCIES std_msgs std_srvs sensor_msgs
+  DEPENDENCIES std_msgs std_srvs
 )
 
 ament_package()
