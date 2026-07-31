@@ -3,17 +3,22 @@ from sensor_msgs.msg import Imu, Image, MagneticField, LaserScan, PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped
 from holoocean_interfaces.msg import DVLSensorRange, AgentCommand # OculusPing
+
+# Custom msgs
 from sonar_oculus_msgs.msg import OculusPing
+from rti_dvl_msgs.msg import Dvl
+from pressure_sensor_msgs.msg import Depth
+
 from scipy.spatial.transform import Rotation
 import numpy as np
-import cv2
+
 
 PERFECT_COV = 1e-9
 UNKNOWN_COV = -1
 
 # TODO make a note about how the Dynamics Sensor IMU is not in local frame. Also no gravity vector
 multi_publisher_sensors = {
-    'DVLSensor': ['Velocity', 'Range'],
+    'DVLSensor': ['Velocity', 'Range', 'Custom'],
     'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
     'IMUSensor': ['', 'Bias'],
     'RaycastImagingSonar': ['', 'Image']
@@ -264,6 +269,23 @@ class DVLRangeEncoder(SensorPublisher):
 
         return msg
 
+class DVLCustomEncoder(SensorPublisher):
+    def __init__(self, sensor_dict):
+        super().__init__(sensor_dict)
+
+        self.message_type = Dvl
+
+    def encode(self, sensor_data):
+        msg = self.message_type()
+        msg.header.frame_id = self.socket
+
+        msg.velocity.x = float(sensor_data[0])
+        msg.velocity.y = float(sensor_data[1])
+        msg.velocity.z = float(sensor_data[2])
+
+        return msg
+
+        
 class DepthEncoder(SensorPublisher):
     def __init__(self, sensor_dict):
         super().__init__(sensor_dict)
@@ -770,4 +792,5 @@ encoders = {
     # 'GPUImagingSonar': SonarEncoder,
     'RaycastImagingSonar': SonarEncoder,
     'RaycastImagingSonarImage': SonarImageEncoder,
+    'DVLSensorCustom': DVLCustomEncoder,
 }
