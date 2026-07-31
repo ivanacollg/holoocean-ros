@@ -21,7 +21,8 @@ multi_publisher_sensors = {
     'DVLSensor': ['Velocity', 'Range', 'Custom'],
     'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
     'IMUSensor': ['', 'Bias'],
-    'RaycastImagingSonar': ['', 'Image']
+    'RaycastImagingSonar': ['', 'Image'],
+    'DepthSensor': ['', 'Custom']
     # TODO add Camera sensor and info topic
 }
 
@@ -307,6 +308,20 @@ class DepthEncoder(SensorPublisher):
         msg.child_frame_id = self.socket
         msg.pose.pose.position.z = float(sensor_data[0])
         msg.pose.covariance = self.cov
+        return msg
+
+class DepthCustomEncoder(SensorPublisher):
+    def __init__(self, sensor_dict):
+        super().__init__(sensor_dict)
+
+        self.message_type = Depth
+
+    def encode(self, sensor_data):
+        msg = self.message_type()
+        msg.header.frame_id = self.map_frame
+        msg.child_frame_id = self.socket
+        msg.depth = float(sensor_data[0])
+
         return msg
 
 class PoseSensorEncoder(SensorPublisher):
@@ -793,4 +808,5 @@ encoders = {
     'RaycastImagingSonar': SonarEncoder,
     'RaycastImagingSonarImage': SonarImageEncoder,
     'DVLSensorCustom': DVLCustomEncoder,
+    'DepthSensorCustom': DepthCustomEncoder,
 }
