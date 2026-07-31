@@ -319,7 +319,6 @@ class DepthCustomEncoder(SensorPublisher):
     def encode(self, sensor_data):
         msg = self.message_type()
         msg.header.frame_id = self.map_frame
-        msg.child_frame_id = self.socket
         msg.depth = float(sensor_data[0])
 
         return msg
