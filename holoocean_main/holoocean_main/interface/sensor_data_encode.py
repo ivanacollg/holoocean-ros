@@ -22,6 +22,7 @@ multi_publisher_sensors = {
     'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
     'IMUSensor': ['', 'Bias'],
     'RaycastImagingSonar': ['', 'Image'],
+    'GPUImagingSonar': ['', 'Image'],
     'DepthSensor': ['', 'Custom']
     # TODO add Camera sensor and info topic
 }
@@ -803,7 +804,8 @@ encoders = {
   #  'IMUDynamics': IMUDynamicsEncoder,
     # Add other sensor type encoders here...
     # 'ImagingSonar': SonarEncoder,
-    # 'GPUImagingSonar': SonarEncoder,
+    'GPUImagingSonar': SonarEncoder,
+    'GPUImagingSonarImage': SonarImageEncoder,
     'RaycastImagingSonar': SonarEncoder,
     'RaycastImagingSonarImage': SonarImageEncoder,
     'DVLSensorCustom': DVLCustomEncoder,
