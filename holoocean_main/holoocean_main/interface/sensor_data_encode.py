@@ -319,7 +319,7 @@ class DepthCustomEncoder(SensorPublisher):
     def encode(self, sensor_data):
         msg = self.message_type()
         msg.header.frame_id = self.map_frame
-        msg.depth = float(sensor_data[0])
+        msg.depth = float(sensor_data[0]) * -1 # MRS_SLAM Depth is positive down, but HoloOcean depth is positive up
 
         return msg
 
