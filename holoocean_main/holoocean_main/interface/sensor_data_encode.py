@@ -21,6 +21,7 @@ multi_publisher_sensors = {
     'DVLSensor': ['Velocity', 'Range', 'Custom'],
     'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
     'IMUSensor': ['', 'Bias'],
+    'ImagingSonar': ['', 'Image'],
     'RaycastImagingSonar': ['', 'Image'],
     'GPUImagingSonar': ['', 'Image'],
     'DepthSensor': ['', 'Custom']
@@ -803,7 +804,8 @@ encoders = {
     'PoseSensor': PoseSensorEncoder,
   #  'IMUDynamics': IMUDynamicsEncoder,
     # Add other sensor type encoders here...
-    # 'ImagingSonar': SonarEncoder,
+    'ImagingSonar': SonarEncoder,
+    'ImagingSonarImage': SonarImageEncoder,
     'GPUImagingSonar': SonarEncoder,
     'GPUImagingSonarImage': SonarImageEncoder,
     'RaycastImagingSonar': SonarEncoder,
