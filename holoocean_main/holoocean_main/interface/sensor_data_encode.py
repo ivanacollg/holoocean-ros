@@ -31,7 +31,8 @@ multi_publisher_sensors = {
 # Pairs of sensor types that, when both present on an agent, produce an additional combined topic.
 # Key: (primary_sensor_type, secondary_sensor_type), Value: combined encoder name
 combined_sensor_pairs = {
-    ('IMUSensor', 'DynamicsSensor'): 'IMUDynamics',
+   # ('IMUSensor', 'DynamicsSensor'): 'IMUDynamics',
+    ('IMUSensor', 'DynamicsSensor'): 'IMUBiasCustom',
 }
 
 def _build_covariance(dim, cov=None, sigma=None):
@@ -212,6 +213,41 @@ class IMUEncoder(SensorPublisher):
         msg.angular_velocity_covariance = self.ang_cov
 
         return msg
+
+class IMUCustomEncoder(MultiSensorPublisher):
+    def __init__(self, name, agent_name, sensor_dict):
+        super().__init__(name, agent_name, sensor_dict)
+        self.message_type = Imu
+
+        self.imu_encoder = IMUEncoder(sensor_dict[0])
+        self.dyno_encoder = DynamicsIMUEncoder(sensor_dict[1])
+
+        imu_dict = sensor_dict[0]
+        config = imu_dict.get('configuration', {}) or {}
+        self.Hz = imu_dict.get('Hz', 200) # Default to 200 Hz if not specified
+
+        self.cumulative_drift = np.zeros(3)
+
+
+    def encode (self, imu_data, dyno_data):
+        msg = self.message_type()
+        msg.header.frame_id = self.socket
+
+        ori = dyno_data[15:19]
+        gyro_bias = imu_data[3, :]
+
+        self.cumulative_drift += gyro_bias / self.Hz
+        true_euler = Rotation.from_quat(ori).as_euler('xyz', degrees=True)
+        drift_euler = true_euler + self.cumulative_drift
+        drift_quat = Rotation.from_euler('xyz', drift_euler, degrees=True).as_quat()
+
+        msg.orientation.x = float(drift_quat[0])
+        msg.orientation.y = float(drift_quat[1])
+        msg.orientation.z = float(drift_quat[2])
+        msg.orientation.w = float(drift_quat[3])
+
+        return msg
+    
 
 class DVLEncoder(SensorPublisher):
     def __init__(self, sensor_dict):
@@ -812,4 +848,5 @@ encoders = {
     'RaycastImagingSonarImage': SonarImageEncoder,
     'DVLSensorCustom': DVLCustomEncoder,
     'DepthSensorCustom': DepthCustomEncoder,
+    'IMUBiasCustom': IMUCustomEncoder,
 }
