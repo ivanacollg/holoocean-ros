@@ -1,6 +1,6 @@
 # Use the specified base image
-FROM frostlab/holoocean:2.0-dev-ubuntu22.04-cuda12.4
-ARG ROS_DISTRO=humble
+FROM frostlab/holoocean:2.0-dev-ubuntu24.04-cuda12.9
+ARG ROS_DISTRO=jazzy
 # Switch to root user to install dependencies
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
@@ -29,13 +29,6 @@ RUN apt update && apt install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# ROS 2 packages for examples
-RUN apt update && apt install -y --no-install-recommends \
-    ros-${ROS_DISTRO}-rqt-image-view \
-    ros-${ROS_DISTRO}-cv-bridge \
-    ros-${ROS_DISTRO}-joy-linux && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
 # Source ROS setup for all users via bashrc
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /home/ue4/.bashrc
 ENV ROS_DISTRO=${ROS_DISTRO}
@@ -43,6 +36,14 @@ ENV ROS_DISTRO=${ROS_DISTRO}
 # for pip installlation
 RUN usermod -aG sudo ue4 && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# ROS 2 packages for examples
+RUN apt update && apt install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rqt-image-view \
+    ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-teleop-twist-keyboard \
+    ros-${ROS_DISTRO}-joy-linux && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Switch back to ue4 user and set up workspace
 USER ue4

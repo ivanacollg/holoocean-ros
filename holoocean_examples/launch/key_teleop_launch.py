@@ -1,24 +1,29 @@
-## Holocean launch file 
-# Author: Braden Meyers
-
-import os
+## HoloOcean keyboard teleop launch file
+#
+# Starts the simulation and a Twist-to-AgentCommand converter node.
+# Run teleop_twist_keyboard separately in its own terminal:
+#
+#   ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+#       --ros-args -r __ns:=/holoocean
 
 from launch import LaunchDescription
 import launch_ros.actions
+from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
 from ament_index_python.packages import get_package_share_directory
 from pathlib import Path
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+import os
+
 
 def generate_launch_description():
-    print('Launching HoloOcean Vehicle Simulation')
+    print('Launching HoloOcean Keyboard Teleop')
 
     # Declare a launch argument for the parameter file
     default_params_file = str(
         Path(
             os.path.join(
                 get_package_share_directory('holoocean_examples'),
-                'config/joy_config.yaml'
+                'config/key_teleop_config.yaml'
             )
         )
     )
@@ -34,24 +39,13 @@ def generate_launch_description():
 
     holoocean_namespace = 'holoocean'
 
-    # TODO make a flag to install the deps for the examples
-    # TODO make the parameters file a pass in argument to the launch file
-    joy_node = launch_ros.actions.Node(
-        package='joy_linux',
-        executable='joy_linux_node',
-        namespace=holoocean_namespace,
-        name='joy_node',
-        output='screen',
-        parameters=[params_file]
-    )
-    
-    joy_holo = launch_ros.actions.Node(
-        name='joy_holoocean',
+    twist_holoocean_node = launch_ros.actions.Node(
+        name='twist_holoocean',
         package='holoocean_examples',
         namespace=holoocean_namespace,
-        executable='joy_holoocean',  
+        executable='twist_holoocean',
         output='screen',
-        parameters=[params_file]  
+        parameters=[params_file],
     )
 
     holoocean_main_node = launch_ros.actions.Node(
@@ -64,21 +58,8 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
-    camera_hud_node = launch_ros.actions.Node(
-        name='camera_hud',
-        package='holoocean_examples',
-        executable='camera_hud',
-        namespace=holoocean_namespace,
-        output='screen',
-        parameters=[params_file],
-    )
-
     return LaunchDescription([
         declare_params_file,
         holoocean_main_node,
-        joy_holo,
-        joy_node,
-        camera_hud_node,
+        twist_holoocean_node,
     ])
-
-

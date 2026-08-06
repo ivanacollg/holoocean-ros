@@ -2,17 +2,101 @@ from abc import ABC, abstractmethod
 from sensor_msgs.msg import Imu, Image, MagneticField, LaserScan, PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Vector3Stamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped
-from holoocean_interfaces.msg import DVLSensorRange, AgentCommand
+from holoocean_interfaces.msg import DVLSensorRange, AgentCommand # OculusPing
+
+# Custom msgs
+from sonar_oculus_msgs.msg import OculusPing
+from rti_dvl_msgs.msg import Dvl
+from pressure_sensor_msgs.msg import Depth
+
 from scipy.spatial.transform import Rotation
 import numpy as np
 
-# TODO make a not about how the Dynamics Sensor IMU is not in local frame
+
+PERFECT_COV = 1e-9
+UNKNOWN_COV = -1
+
+# TODO make a note about how the Dynamics Sensor IMU is not in local frame. Also no gravity vector
 multi_publisher_sensors = {
-    'DVLSensor': ['Velocity', 'Range'],
-    'DynamicsSensor': ['Odom', 'IMU'],
-    'IMUSensor': ['', 'Bias']
+    'DVLSensor': ['Velocity', 'Range', 'Custom'],
+    'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
+    'IMUSensor': ['', 'Bias'],
+    'ImagingSonar': ['', 'Image'],
+    'RaycastImagingSonar': ['', 'Image'],
+    'GPUImagingSonar': ['', 'Image'],
+    'DepthSensor': ['', 'Custom']
     # TODO add Camera sensor and info topic
 }
+
+# Pairs of sensor types that, when both present on an agent, produce an additional combined topic.
+# Key: (primary_sensor_type, secondary_sensor_type), Value: combined encoder name
+combined_sensor_pairs = {
+   # ('IMUSensor', 'DynamicsSensor'): 'IMUDynamics',
+    ('IMUSensor', 'DynamicsSensor'): 'IMUBiasCustom',
+}
+
+def _build_covariance(dim, cov=None, sigma=None):
+    """
+    Returns flattened NxN covariance list.
+
+    Inputs (mutually exclusive):
+    - cov: scalar, length-N, or NxN
+    - sigma: scalar or length-N (converted to covariance)
+
+    Default:
+    - If both None → uses PERFECT_COV
+    """
+
+    if cov is not None and sigma is not None:
+        raise ValueError("Cannot specify both covariance and sigma.")
+
+    # --- sigma → covariance ---
+    if sigma is not None:
+        s = np.array(sigma, dtype=float)
+
+        if s.ndim == 0:
+            cov = float(s)**2
+        elif s.shape == (dim,):
+            cov = s**2
+        else:
+            raise ValueError(f"Sigma must be scalar or length-{dim}.")
+
+    # --- default ---
+    if cov is None:
+        return (np.eye(dim) * float(PERFECT_COV)).flatten().tolist()
+
+    c = np.array(cov, dtype=float)
+
+    # scalar → σ² I
+    if c.ndim == 0:
+        return (np.eye(dim) * float(c)).flatten().tolist()
+
+    # diagonal
+    if c.shape == (dim,):
+        return np.diag(c).flatten().tolist()
+
+    # full matrix
+    if c.shape == (dim, dim):
+        return c.flatten().tolist()
+
+    raise ValueError(f"Covariance must be scalar, length-{dim}, or {dim}x{dim}.")
+
+def _get_partial_six_covariance(cov=None, sigma=None):
+    """
+    Returns flattened 6x6 covariance.
+
+    Only fills top-left 3x3.
+    """
+
+    # Build 3x3 first
+    cov3 = np.array(_build_covariance(3, cov=cov, sigma=sigma)).reshape(3, 3)
+
+    # Embed into 6x6
+    cov6 = np.zeros((6, 6))
+    cov6[:3, :3] = cov3
+
+    return cov6.flatten().tolist()
+
 
 class SensorPublisher(ABC):
     def __init__(self, sensor_dict):
@@ -30,6 +114,9 @@ class SensorPublisher(ABC):
         else:
             self.socket = "base_link"
 
+        self.socket = self.agent_name + "/" + self.socket
+        self.map_frame = sensor_dict.get('map_frame', 'holoocean_map')
+
         self.publisher = None
 
 
@@ -37,56 +124,89 @@ class SensorPublisher(ABC):
     def encode(self, sensor_data):
         pass
 
+
+class MultiSensorPublisher(ABC):
+    """Publisher that merges data from two simulator sensors into one message."""
+
+    def __init__(self, name, agent_name, sensor_dicts):
+        self.name = name
+        self.type = name
+        self.agent_name = agent_name
+        self.state_names = [d['state_name'] for d in sensor_dicts]
+
+        socket_a = sensor_dicts[0].get('socket', '')
+        socket_b = sensor_dicts[1].get('socket', '')
+        if socket_a != socket_b:
+            # TODO: For now this is OK because socket doesnt matter for orientation but should change
+            # and maybe error out
+            print(
+                f"WARNING: MultiSensorPublisher '{name}' for agent '{agent_name}': "
+                f"sensors have different sockets ('{socket_a}' vs '{socket_b}'). "
+                f"Using '{socket_a}' as the published frame_id."
+            )
+
+        socket_name = socket_a if socket_a else "base_link"
+        self.socket = f"{agent_name}/{socket_name}"
+
+        self.publisher = None
+
+    @abstractmethod
+    def encode(self, sensor_data_a, sensor_data_b):
+        pass
+
 class IMUEncoder(SensorPublisher):
     def __init__(self, sensor_dict):
         super().__init__(sensor_dict)
 
         self.message_type = Imu
-        
 
-        self.accel_cov = [0.0] * 9
-        self.ang_cov = [0.0] * 9
+        config = self.config or {}
+        if self.type == 'IMUSensorBias':
+            accel_cov_key = 'AccelBiasCov'
+            accel_sigma_key = 'AccelBiasSigma'
+            ang_cov_key = 'AngVelBiasCov'
+            ang_sigma_key = 'AngVelBiasSigma'
+        elif self.type == 'IMUSensor':
+            accel_cov_key = 'AccelCov'
+            accel_sigma_key = 'AccelSigma'
+            ang_cov_key = 'AngVelCov'
+            ang_sigma_key = 'AngVelSigma'
+        else:
+            raise ValueError(f"Unknown IMU sensor type: {self.type}")
 
-        if self.config is not None:
-            if 'AccelCov' in self.config:
-                if isinstance(self.config['AccelCov'][0], list):
-                    flattened_cov = [item for sublist in self.config['AccelCov'] for item in sublist]
-                    if len(flattened_cov) == 9:
-                        self.accel_cov = [float(value) for value in flattened_cov]                   
-                elif len(self.config['AccelCov']) == 3:
-                    self.accel_cov[0] = float(self.config['AccelCov'][0])
-                    self.accel_cov[4] = float(self.config['AccelCov'][1])
-                    self.accel_cov[8] = float(self.config['AccelCov'][2])
-                else:
-                    raise ValueError("AccelCov must be a list of length 3 or 3x3.")
-            
-            if 'AngVelCov' in self.config:
-                if isinstance(self.config['AngVelCov'][0], list):
-                    flattened_cov = [item for sublist in self.config['AngVelCov'] for item in sublist]
-                    if len(flattened_cov) == 9:
-                        self.ang_cov = [float(value) for value in flattened_cov]                   
-                elif len(self.config['AngVelCov']) == 3:
-                    self.ang_cov[0] = float(self.config['AngVelCov'][0])
-                    self.ang_cov[4] = float(self.config['AngVelCov'][1])
-                    self.ang_cov[8] = float(self.config['AngVelCov'][2])
-                else:
-                    raise ValueError("AngVelCov must be a list of length 3 or 3x3.")
-           
+        self.accel_cov = _build_covariance(
+            dim=3,
+            cov=config.get(accel_cov_key),
+            sigma=config.get(accel_sigma_key),
+        )
+
+        self.ang_cov = _build_covariance(
+            dim=3,
+            cov=config.get(ang_cov_key),
+            sigma=config.get(ang_sigma_key),
+        )  
     
     def encode(self, sensor_data):
         msg = self.message_type()
         msg.header.frame_id = self.socket
-        msg.orientation_covariance[0] = -1
+        msg.orientation_covariance[0] = UNKNOWN_COV
+
+        if self.type == 'IMUSensorBias':
+            accel_row = 2
+            ang_row = 3
+        elif self.type == 'IMUSensor':
+            accel_row = 0
+            ang_row = 1
 
         # Assign acceleration
-        msg.linear_acceleration.x = float(sensor_data[0, 0])
-        msg.linear_acceleration.y = float(sensor_data[0, 1])
-        msg.linear_acceleration.z = float(sensor_data[0, 2])
+        msg.linear_acceleration.x = float(sensor_data[accel_row, 0])
+        msg.linear_acceleration.y = float(sensor_data[accel_row, 1])
+        msg.linear_acceleration.z = float(sensor_data[accel_row, 2])
 
         # Assign angular velocity
-        msg.angular_velocity.x = float(sensor_data[1, 0])
-        msg.angular_velocity.y = float(sensor_data[1, 1])
-        msg.angular_velocity.z = float(sensor_data[1, 2])
+        msg.angular_velocity.x = float(sensor_data[ang_row, 0])
+        msg.angular_velocity.y = float(sensor_data[ang_row, 1])
+        msg.angular_velocity.z = float(sensor_data[ang_row, 2])
 
         
         msg.linear_acceleration_covariance = self.accel_cov
@@ -94,32 +214,40 @@ class IMUEncoder(SensorPublisher):
 
         return msg
 
-class IMUBiasEncoder(SensorPublisher):
-    def __init__(self, sensor_dict):
-        super().__init__(sensor_dict)
-        
-        self.message_type = TwistWithCovarianceStamped
-        self.cov = [0.0] * 36
+class IMUCustomEncoder(MultiSensorPublisher):
+    def __init__(self, name, agent_name, sensor_dict):
+        super().__init__(name, agent_name, sensor_dict)
+        self.message_type = Imu
 
-    def encode(self, sensor_data):
+        self.imu_encoder = IMUEncoder(sensor_dict[0])
+        self.dyno_encoder = DynamicsIMUEncoder(sensor_dict[1])
+
+        imu_dict = sensor_dict[0]
+        config = imu_dict.get('configuration', {}) or {}
+        self.Hz = imu_dict.get('Hz', 200) # Default to 200 Hz if not specified
+
+        self.cumulative_drift = np.zeros(3)
+
+
+    def encode (self, imu_data, dyno_data):
         msg = self.message_type()
         msg.header.frame_id = self.socket
-        
-        # Check if bias data is available (requires ReturnBias=True in config)
-        if sensor_data.shape[0] >= 4:
-            # Accelerometer Bias (Row 2) -> Linear Twist
-            msg.twist.twist.linear.x = float(sensor_data[2, 0])
-            msg.twist.twist.linear.y = float(sensor_data[2, 1])
-            msg.twist.twist.linear.z = float(sensor_data[2, 2])
 
-            # Gyroscope Bias (Row 3) -> Angular Twist
-            msg.twist.twist.angular.x = float(sensor_data[3, 0])
-            msg.twist.twist.angular.y = float(sensor_data[3, 1])
-            msg.twist.twist.angular.z = float(sensor_data[3, 2])
+        ori = dyno_data[15:19]
+        gyro_bias = imu_data[3, :]
 
-        msg.twist.covariance = self.cov
+        self.cumulative_drift += gyro_bias / self.Hz
+        true_euler = Rotation.from_quat(ori).as_euler('xyz', degrees=True)
+        drift_euler = true_euler + self.cumulative_drift
+        drift_quat = Rotation.from_euler('xyz', drift_euler, degrees=True).as_quat()
+
+        msg.orientation.x = float(drift_quat[0])
+        msg.orientation.y = float(drift_quat[1])
+        msg.orientation.z = float(drift_quat[2])
+        msg.orientation.w = float(drift_quat[3])
 
         return msg
+    
 
 class DVLEncoder(SensorPublisher):
     def __init__(self, sensor_dict):
@@ -127,25 +255,27 @@ class DVLEncoder(SensorPublisher):
         
         self.message_type = TwistWithCovarianceStamped
 
-        self.cov = [0.0] * 36
+        config = self.config or {}
+
+        cov = config.get('VelCov')
+        sigma = config.get('VelSigma')
 
         #TODO: Holoocean Sensor sets covariance on each beam velocity lenght 4
+        # FOR NOW we can only handle the case where it is a scalar
+        if cov is not None:
+            # Check cov is scalar
+            if not isinstance(cov, (int, float)):
+                raise ValueError("Velocity covariance must be a scalar.")
+            
+        if sigma is not None:
+            # Check sigma is scalar
+            if not isinstance(sigma, (int, float)):
+                raise ValueError("Velocity sigma must be a scalar.")
 
-        if self.config is not None:
-            if 'VelCov' in self.config:
-                if isinstance(self.config['VelCov'][0], list):
-                    flattened_cov = [item for sublist in self.config['VelCov'] for item in sublist]
-                    self.cov[0] = float(flattened_cov[0])
-                    self.cov[7] = float(flattened_cov[5])
-                    self.cov[14] = float(flattened_cov[10])                   
-                elif len(self.config['VelCov']) == 4:
-                    self.cov[0] = float(self.config['VelCov'][0])
-                    self.cov[7] = float(self.config['VelCov'][1])
-                    self.cov[14] = float(self.config['VelCov'][2])
-                else:
-                    raise ValueError("VelCov must be a list of length 4 or 4x4.")
-
-        
+        self.cov = _get_partial_six_covariance(
+            cov=config.get('VelCov'),
+            sigma=config.get('VelSigma'),
+        )
 
     def encode(self, sensor_data):
         msg = self.message_type()
@@ -164,7 +294,8 @@ class DVLRangeEncoder(SensorPublisher):
         super().__init__(sensor_dict)
 
         self.message_type = DVLSensorRange
-
+        # TODO Range Covariance
+        # TODO with update DVL sensor in HoloOcean
 
     def encode(self, sensor_data):
         msg = self.message_type()
@@ -177,23 +308,57 @@ class DVLRangeEncoder(SensorPublisher):
 
         return msg
 
+class DVLCustomEncoder(SensorPublisher):
+    def __init__(self, sensor_dict):
+        super().__init__(sensor_dict)
+
+        self.message_type = Dvl
+
+    def encode(self, sensor_data):
+        msg = self.message_type()
+        msg.header.frame_id = self.socket
+
+        msg.velocity.x = float(sensor_data[0])
+        msg.velocity.y = float(sensor_data[1])
+        msg.velocity.z = float(sensor_data[2])
+
+        return msg
+
+        
 class DepthEncoder(SensorPublisher):
     def __init__(self, sensor_dict):
         super().__init__(sensor_dict)
 
         self.message_type = Odometry
         self.cov = [0.0] * 36
+        self.cov[14] = PERFECT_COV  # Z position covariance
 
         if self.config is not None:
             if 'Cov' in self.config:
                 self.cov[14] = float(self.config['Cov'])
+            if 'Sigma' in self.config:
+                self.cov[14] = float(self.config['Sigma']) ** 2
+            
 
     def encode(self, sensor_data):
         msg = self.message_type()
-        msg.header.frame_id = 'map'
+        msg.header.frame_id = self.map_frame
         msg.child_frame_id = self.socket
         msg.pose.pose.position.z = float(sensor_data[0])
         msg.pose.covariance = self.cov
+        return msg
+
+class DepthCustomEncoder(SensorPublisher):
+    def __init__(self, sensor_dict):
+        super().__init__(sensor_dict)
+
+        self.message_type = Depth
+
+    def encode(self, sensor_data):
+        msg = self.message_type()
+        msg.header.frame_id = self.map_frame
+        msg.depth = float(sensor_data[0]) * -1 # MRS_SLAM Depth is positive down, but HoloOcean depth is positive up
+
         return msg
 
 class PoseSensorEncoder(SensorPublisher):
@@ -229,21 +394,8 @@ class LocationEncoder(SensorPublisher):
 
         self.message_type = PoseWithCovarianceStamped
 
-        self.cov = [0.0] * 36
-
-        if self.config is not None:
-            if 'Cov' in self.config:
-                if isinstance(self.config['Cov'][0], list):
-                    flattened_cov = [item for sublist in self.config['Cov'] for item in sublist]
-                    self.cov[0] = float(flattened_cov[0])
-                    self.cov[7] = float(flattened_cov[5])
-                    self.cov[14] = float(flattened_cov[10])                   
-                elif len(self.config['Cov']) == 3:
-                    self.cov[0] = float(self.config['Cov'][0])
-                    self.cov[7] = float(self.config['Cov'][1])
-                    self.cov[14] = float(self.config['Cov'][2])
-                else:
-                    raise ValueError("Cov must be a list of length 3 or 3x3.")
+        config = self.config or {}
+        self.cov = _get_partial_six_covariance(cov=config.get('Cov'), sigma=config.get('Sigma'))
 
     def encode(self, sensor_data):
         msg = self.message_type()
@@ -275,17 +427,19 @@ class VelocityEncoder(SensorPublisher):
         super().__init__(sensor_dict)
         
         self.message_type = TwistWithCovarianceStamped
+        self.cov = _get_partial_six_covariance(cov=None, sigma=None)
 
 
     def encode(self, sensor_data):
         msg = self.message_type()
-        msg.header.frame_id = self.socket
-        #Frame id might actually be base link for velocity
+        msg.header.frame_id = self.socket + "_world"
+        #Frame id is global frame
 
         # Assign velocity
         msg.twist.twist.linear.x = float(sensor_data[0])
         msg.twist.twist.linear.y = float(sensor_data[1])
         msg.twist.twist.linear.z = float(sensor_data[2])
+        msg.twist.covariance = self.cov
 
         return msg
 
@@ -294,13 +448,17 @@ class DynamicsEncoder(SensorPublisher):
         super().__init__(sensor_dict)
         
         self.message_type = Odometry
-
+        self.cov = _build_covariance(6, cov=None, sigma=None)
 
     def encode(self, sensor_data):
         msg = self.message_type()
-        msg.header.frame_id = 'holoocean_global_frame'
+        # TODO would need to check if UseCOM flag is set.
+        msg.header.frame_id = self.map_frame
+        msg.child_frame_id = self.socket + "_world"
         if len(sensor_data) == 18:
-            sensor_data.append(-100) # Should error out if mistakenly trying to use it as a quaternion
+            sensor_data = np.append(sensor_data, -100) # Should error out if mistakenly trying to use it as a quaternion
+            # TODO should try and think of a better solution.
+            #print(len(sensor_data))
         elif len(sensor_data) != 19:
             raise TypeError("Dynamics data is not the expected shape for ROS publishing")
 
@@ -321,14 +479,52 @@ class DynamicsEncoder(SensorPublisher):
         msg.pose.pose.orientation.z = float(sensor_data[17])
         msg.pose.pose.orientation.w = float(sensor_data[18])
 
-        msg.pose.covariance = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                               0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-                               0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-                               0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-                               0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-                               0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        msg.pose.covariance = self.cov
+        msg.twist.covariance = self.cov
 
         return msg
+
+class DynamicsGTEncoder(DynamicsEncoder):
+    # Uses DynamicsEncoder init
+    
+    def encode(self, sensor_data):
+        rpy = len(sensor_data) == 18
+        msg = super().encode(sensor_data)
+        
+        # Convert velocities from world frame to local frame using the orientation
+        # Extract orientation as a rotation matrix
+        if rpy:
+            roll, pitch, yaw = sensor_data[15], sensor_data[16], sensor_data[17]
+            rotation = Rotation.from_euler('xyz', [roll, pitch, yaw])
+            rot_matrix = rotation.as_matrix()
+            quat = rotation.as_quat()
+            msg.pose.pose.orientation.x = float(quat[0])
+            msg.pose.pose.orientation.y = float(quat[1])
+            msg.pose.pose.orientation.z = float(quat[2])
+            msg.pose.pose.orientation.w = float(quat[3])
+        else:
+            x, y, z, w = sensor_data[15], sensor_data[16], sensor_data[17], sensor_data[18]
+            rot_matrix = Rotation.from_quat([x, y, z, w]).as_matrix()
+            
+        # Extract linear and angular velocities in world frame
+        linear_vel_world = np.array(sensor_data[3:6])
+        angular_vel_world = np.array(sensor_data[12:15])
+        # Transform velocities to local frame
+        linear_vel_local = rot_matrix.T @ linear_vel_world
+        angular_vel_local = rot_matrix.T @ angular_vel_world
+        # Update message with local frame velocities
+        msg.twist.twist.linear.x = float(linear_vel_local[0])
+        msg.twist.twist.linear.y = float(linear_vel_local[1])
+        msg.twist.twist.linear.z = float(linear_vel_local[2])
+
+        msg.twist.twist.angular.x = float(angular_vel_local[0])
+        msg.twist.twist.angular.y = float(angular_vel_local[1])
+        msg.twist.twist.angular.z = float(angular_vel_local[2]) 
+
+        msg.child_frame_id = self.socket  
+
+        return msg
+        
 
 class DynamicsIMUEncoder(SensorPublisher):
     def __init__(self, sensor_dict):
@@ -336,30 +532,14 @@ class DynamicsIMUEncoder(SensorPublisher):
         
         self.message_type = Imu
 
-        self.use_covariance = True
-         # Define arbitrary IMU covariance matrices
-        self.orientation_covariance = np.array([
-            [0.01, 0, 0],
-            [0, 0.01, 0],
-            [0, 0, 0.01]
-        ])
-
-        self.angular_velocity_covariance = np.array([
-            [0.01, 0, 0],
-            [0, 0.01, 0],
-            [0, 0, 0.01]
-        ])
-
-        self.linear_acceleration_covariance = np.array([
-            [0.1, 0, 0],
-            [0, 0.1, 0],
-            [0, 0, 0.1]
-        ])
-
+        # Define arbitrary IMU covariance matrices
+        self.cov = _build_covariance(3, cov=None, sigma=None)  
 
     def encode(self, sensor_data):
+        print(len(sensor_data))
         msg = self.message_type()
-        msg.header.frame_id = 'holoocean_global_frame'
+        # TODO would need to check if UseCOM flag is set.
+        msg.header.frame_id = self.socket + "_world"
 
         # Orientation Quaternion
         msg.orientation.x = float(sensor_data[15])
@@ -377,10 +557,9 @@ class DynamicsIMUEncoder(SensorPublisher):
         msg.angular_velocity.y = float(sensor_data[10])
         msg.angular_velocity.z = float(sensor_data[11])
 
-        if self.use_covariance:
-            msg.orientation_covariance = self.orientation_covariance.flatten().tolist()
-            msg.angular_velocity_covariance = self.angular_velocity_covariance.flatten().tolist()
-            msg.linear_acceleration_covariance = self.linear_acceleration_covariance.flatten().tolist()
+        msg.orientation_covariance = self.cov
+        msg.angular_velocity_covariance = self.cov
+        msg.linear_acceleration_covariance = self.cov
 
         return msg
 
@@ -389,27 +568,13 @@ class GPSEncoder(SensorPublisher):
         super().__init__(sensor_dict)
         
         self.message_type = Odometry
+        config = self.config or {}
 
-
-        self.cov = [0.0] * 36
-
-        if self.config is not None:
-            if 'Cov' in self.config:
-                if isinstance(self.config['Cov'][0], list):
-                    flattened_cov = [item for sublist in self.config['Cov'] for item in sublist]
-                    self.cov[0] = float(flattened_cov[0])
-                    self.cov[7] = float(flattened_cov[5])
-                    self.cov[14] = float(flattened_cov[10])                   
-                elif len(self.config['Cov']) == 3:
-                    self.cov[0] = float(self.config['Cov'][0])
-                    self.cov[7] = float(self.config['Cov'][1])
-                    self.cov[14] = float(self.config['Cov'][2])
-                else:
-                    raise ValueError("Cov must be a list of length 3 or 3x3.")
+        self.cov = _get_partial_six_covariance(cov=config.get('Cov'), sigma=config.get('Sigma'))
 
     def encode(self, sensor_data):
         msg = self.message_type()
-        msg.header.frame_id = 'map'
+        msg.header.frame_id = self.map_frame
         msg.child_frame_id = self.socket
         msg.pose.pose.position.x = float(sensor_data[0])
         msg.pose.pose.position.y = float(sensor_data[1])
@@ -469,6 +634,8 @@ class MagneticFieldEncoder(SensorPublisher):
         super().__init__(sensor_dict)
 
         self.message_type = MagneticField
+        config = self.config or {}
+        self.cov = _build_covariance(3, cov=config.get('Cov'), sigma=config.get('Sigma'))
 
     def encode(self, sensor_data):
         msg = self.message_type()
@@ -477,6 +644,7 @@ class MagneticFieldEncoder(SensorPublisher):
         msg.magnetic_field.x = float(sensor_data[0])
         msg.magnetic_field.y = float(sensor_data[1])
         msg.magnetic_field.z = float(sensor_data[2])
+        msg.magnetic_field_covariance = self.cov
         return msg
 
 class LaserScanEncoder(SensorPublisher):
@@ -519,12 +687,140 @@ class LaserScanEncoder(SensorPublisher):
 
         return msg
 
-# Define other encoders similarly...
+class IMUDynamicsEncoder(MultiSensorPublisher):
+    """Combines IMUSensor (noisy accel/gyro) with DynamicsSensor (orientation)."""
+
+    def __init__(self, name, agent_name, sensor_dicts):
+        super().__init__(name, agent_name, sensor_dicts)
+        self.message_type = Imu
+        # sensor_dicts[0] = IMUSensor, sensor_dicts[1] = DynamicsSensor
+        self.imu_encoder = IMUEncoder(sensor_dicts[0])
+        self.dyn_encoder = DynamicsIMUEncoder(sensor_dicts[1])
+
+    def encode(self, imu_data, dynamics_data):
+        imu_msg = self.imu_encoder.encode(imu_data)
+        dyn_msg = self.dyn_encoder.encode(dynamics_data)
+
+        msg = self.message_type()
+        msg.header.frame_id = self.socket
+        msg.orientation = dyn_msg.orientation
+        msg.orientation_covariance = dyn_msg.orientation_covariance
+        msg.linear_acceleration = imu_msg.linear_acceleration
+        msg.linear_acceleration_covariance = imu_msg.linear_acceleration_covariance
+        msg.angular_velocity = imu_msg.angular_velocity
+        msg.angular_velocity_covariance = imu_msg.angular_velocity_covariance
+
+        return msg
+    
+class SonarEncoder(SensorPublisher):
+
+   def __init__(self, sensor_dicts):
+       super().__init__(sensor_dicts)
+       self.message_type = OculusPing # ImagingSonar
+
+
+       if "configuration" in sensor_dicts:
+           if "RangeMin" in sensor_dicts['configuration']:
+               self.RangeMin = sensor_dicts['configuration']['RangeMin']
+           else:
+               self.RangeMin = 0.1
+           if "RangeMax" in sensor_dicts['configuration']:
+               self.RangeMax = sensor_dicts['configuration']['RangeMax']
+           else:
+               self.RangeMax = 10
+           if "RangeBins" in sensor_dicts['configuration']:
+               self.RangeBins = sensor_dicts['configuration']['RangeBins']
+           else:
+               self.RangeBins = 512
+           if "AzimuthBins" in sensor_dicts['configuration']:
+               self.AziBins = sensor_dicts['configuration']['AzimuthBins']
+           else:
+               self.AziBins = 512
+           if "Azimuth" in sensor_dicts['configuration']:
+               self.azimuth = sensor_dicts['configuration']['Azimuth']
+           else:
+               self.azimuth = 120
+
+
+       else:
+           self.RangeMin = 0.1
+           self.RangeMax = 10
+           self.RangeBins = 512
+           self.AziBins = 512
+           self.azimuth = 120
+
+
+      
+   def encode(self, sensor_data):
+       msg = self.message_type()
+       msg.header.frame_id = self.socket
+
+       msg.num_ranges = self.RangeBins
+       msg.num_beams = self.AziBins
+
+       resolution = (self.RangeMax - self.RangeMin) / self.RangeBins
+       msg.range_resolution = resolution
+
+       bearings_deg = np.linspace(-self.azimuth/2, self.azimuth/2, self.AziBins)
+       msg.bearings = (bearings_deg * 100).astype(np.int16)
+
+    #    img = np.array(sensor_data)
+    #    img = img[::1, ::-1]
+    #    img = np.array(img*255).astype(np.uint8)
+
+    #    img = np.ascontiguousarray(img)
+    #    msg.ping.data = img.tobytes()
+
+       return msg
+
+
+class SonarImageEncoder(SensorPublisher):
+
+   def __init__(self, sensor_dicts):
+       super().__init__(sensor_dicts)
+       self.message_type = Image # ImagingSonar
+
+       if "configuration" in sensor_dicts:
+            if "RangeBins" in sensor_dicts['configuration']:
+                self.RangeBins = sensor_dicts['configuration']['RangeBins']
+            else:
+                self.RangeBins = 512
+            if "AzimuthBins" in sensor_dicts['configuration']:
+                self.AziBins = sensor_dicts['configuration']['AzimuthBins']
+            else:
+                self.AziBins = 512
+       
+       else:
+            self.RangeBins = 512
+            self.AziBins = 512
+      
+   def encode(self, sensor_data):
+       msg = self.message_type()
+       msg.header.frame_id = self.socket
+
+       msg.height = sensor_data.shape[0]  # Rows
+       msg.width = sensor_data.shape[1]   # Columns
+       msg.step = msg.width * 1
+       msg.encoding = "mono8"
+       msg.is_bigendian = 0
+
+       img = np.array(sensor_data)
+       img = img[::1, ::-1]
+       img = np.array(img*255).astype(np.uint8)
+
+    #   img = np.ascontiguousarray(img)
+
+       msg.data = img.tobytes()
+
+     #  print("PUBLISHING IMAGE")
+
+       return msg
+
 
 
 encoders = {
     'IMUSensor': IMUEncoder,
-    'IMUSensorBias': IMUBiasEncoder,
+    'IMUSensorBias': IMUEncoder,
     'DVLSensorVelocity': DVLEncoder,
     'DVLSensorRange': DVLRangeEncoder,
     'DepthSensor': DepthEncoder,
@@ -532,7 +828,8 @@ encoders = {
     'RotationSensor': RotationEncoder,
     'VelocitySensor': VelocityEncoder,
     'DynamicsSensorOdom': DynamicsEncoder,
-    'DynamicsSensorIMU': DynamicsIMUEncoder,
+ #   'DynamicsSensorIMU': DynamicsIMUEncoder,
+    'DynamicsSensorGT': DynamicsGTEncoder,
     'GPSSensor': GPSEncoder,
     'ControlCommand': CommandEncoder,
     'RGBCamera': ImageEncoder,
@@ -541,5 +838,15 @@ encoders = {
     'CameraSensor': ImageEncoder,
     'RangeFinderSensor': LaserScanEncoder,
     'PoseSensor': PoseSensorEncoder,
+  #  'IMUDynamics': IMUDynamicsEncoder,
     # Add other sensor type encoders here...
+    'ImagingSonar': SonarEncoder,
+    'ImagingSonarImage': SonarImageEncoder,
+    'GPUImagingSonar': SonarEncoder,
+    'GPUImagingSonarImage': SonarImageEncoder,
+    'RaycastImagingSonar': SonarEncoder,
+    'RaycastImagingSonarImage': SonarImageEncoder,
+    'DVLSensorCustom': DVLCustomEncoder,
+    'DepthSensorCustom': DepthCustomEncoder,
+    'IMUBiasCustom': IMUCustomEncoder,
 }
