@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from sensor_msgs.msg import Imu, Image, MagneticField, LaserScan, PointCloud2
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Vector3Stamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped
+from geometry_msgs.msg import Vector3Stamped, PoseWithCovarianceStamped, TwistWithCovarianceStamped, TransformStamped, PoseStamped
+
 from holoocean_interfaces.msg import DVLSensorRange, AgentCommand # OculusPing
 
 # Custom msgs
@@ -19,7 +20,7 @@ UNKNOWN_COV = -1
 # TODO make a note about how the Dynamics Sensor IMU is not in local frame. Also no gravity vector
 multi_publisher_sensors = {
     'DVLSensor': ['Velocity', 'Range', 'Custom'],
-    'DynamicsSensor': ['Odom', 'GT'], #['Odom', 'IMU', 'GT'],
+    'DynamicsSensor': ['Odom', 'GT', 'GTCustom'], #['Odom', 'IMU', 'GT'],
     'IMUSensor': ['', 'Bias'],
     'ImagingSonar': ['', 'Image'],
     'RaycastImagingSonar': ['', 'Image'],
@@ -524,6 +525,39 @@ class DynamicsGTEncoder(DynamicsEncoder):
         msg.child_frame_id = self.socket  
 
         return msg
+
+class DynamicsGTCustom(SensorPublisher):
+    def __init__(self, sensor_dict):
+        super().__init__(sensor_dict)
+        self.message_type = TransformStamped
+    
+    
+    def encode(self, sensor_data):
+        rpy = len(sensor_data) == 18
+
+        msg = self.message_type()
+        msg.header.frame_id = "map"
+        msg.child_frame_id = "holoocean_gt_link"
+
+
+        if len(sensor_data) == 18:
+            sensor_data = np.append(sensor_data, -100) # Should error out if mistakenly trying to use it as a quaternion
+            # TODO should try and think of a better solution.
+            #print(len(sensor_data))
+        elif len(sensor_data) != 19:
+            raise TypeError("Dynamics data is not the expected shape for ROS publishing")
+
+        msg.transform.translation.x = float(sensor_data[6])
+        msg.transform.translation.y = float(sensor_data[7])
+        msg.transform.translation.z = float(sensor_data[8])
+
+        msg.transform.rotation.x = float(sensor_data[15])
+        msg.transform.rotation.y = float(sensor_data[16])
+        msg.transform.rotation.z = float(sensor_data[17])
+        msg.transform.rotation.w = float(sensor_data[18])
+
+        return msg
+
         
 
 class DynamicsIMUEncoder(SensorPublisher):
@@ -849,4 +883,5 @@ encoders = {
     'DVLSensorCustom': DVLCustomEncoder,
     'DepthSensorCustom': DepthCustomEncoder,
     'IMUBiasCustom': IMUCustomEncoder,
+    'DynamicsSensorGTCustom': DynamicsGTCustom
 }
