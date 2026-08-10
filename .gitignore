@@ -17,6 +17,7 @@ docker/runtime/tmp/*
 !*.json
 *.tar
 *.zip
+*.pyc
 
 # Temp folder for docker build
 docker/tmp
