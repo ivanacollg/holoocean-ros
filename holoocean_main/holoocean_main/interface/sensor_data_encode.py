@@ -239,7 +239,12 @@ class IMUCustomEncoder(MultiSensorPublisher):
 
         self.cumulative_drift += gyro_bias / self.Hz
         true_euler = Rotation.from_quat(ori).as_euler('xyz', degrees=True)
-        drift_euler = true_euler + self.cumulative_drift
+        # Create a new array that only adds drift to index 2 (Yaw)
+        drift_euler = [
+            true_euler[0],                            # Original Roll
+            true_euler[1],                            # Original Pitch
+            true_euler[2] + self.cumulative_drift[2]  # Drifted Yaw
+        ]
         drift_quat = Rotation.from_euler('xyz', drift_euler, degrees=True).as_quat()
 
         msg.orientation.x = float(drift_quat[0])
