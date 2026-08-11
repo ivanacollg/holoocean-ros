@@ -756,6 +756,7 @@ class SonarEncoder(SensorPublisher):
    def __init__(self, sensor_dicts):
        super().__init__(sensor_dicts)
        self.message_type = OculusPing # ImagingSonar
+       self.counter = 0
 
 
        if "configuration" in sensor_dicts:
@@ -802,6 +803,17 @@ class SonarEncoder(SensorPublisher):
 
        bearings_deg = np.linspace(-self.azimuth/2, self.azimuth/2, self.AziBins)
        msg.bearings = (bearings_deg * 100).astype(np.int16)
+
+       msg.fire_msg.mode = 1
+       msg.fire_msg.range = float(self.RangeMax)
+       #msg.fire_msg.gain = 30
+       #msg.fire_msg.flags = 73
+       #msg.fire_msg.gamma = 127
+       #msg.fire_msg.speed_of_sound = 1488.5
+       #msg.fire_msg.salinity = 35
+       msg.part_number = 1032
+       msg.ping_id = self.counter
+       self.counter += 1
 
     #    img = np.array(sensor_data)
     #    img = img[::1, ::-1]
