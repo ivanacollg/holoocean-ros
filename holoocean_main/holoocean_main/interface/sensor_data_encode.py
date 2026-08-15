@@ -541,7 +541,7 @@ class DynamicsGTCustom(SensorPublisher):
         rpy = len(sensor_data) == 18
 
         msg = self.message_type()
-        msg.header.frame_id = "map"
+        msg.header.frame_id = "holo_map"
         msg.child_frame_id = "holoocean_gt_link"
 
 
@@ -856,15 +856,23 @@ class SonarImageEncoder(SensorPublisher):
        msg.is_bigendian = 0
 
        img = np.array(sensor_data)
+
+       # --- OCULUS PROCESSING SIMULATION ---
+       # 2. Apply User Gain (Simulating the Oculus 0-100 UI slider)
+       gain_setting = 30.0  # Your requested gain of 30%
+       
+       # Map the 0-100 setting to an exponential multiplier. 
+       # (50 = 1.0x baseline, 30 = ~0.36x dimmer, 80 = ~2.5x brighter)
+       gain_multiplier = 1.0 + (gain_setting / 100.0)
+       img = img * gain_multiplier
+       
+       # ------------------------------------
+   
+       # Flip the image vertically if required by your ROS viewer
        img = img[::1, ::-1]
        img = np.array(img*255).astype(np.uint8)
-
-    #   img = np.ascontiguousarray(img)
-
+   
        msg.data = img.tobytes()
-
-     #  print("PUBLISHING IMAGE")
-
        return msg
 
 
